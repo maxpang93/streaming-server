@@ -41,60 +41,64 @@ func checkReadPerm(path string) error {
 }
 
 func checkIsFile(path string) (bool, error) {
-	info, err := os.Stat(path)
-	if err != nil && errors.Is(err, os.ErrNotExist) {
-		return false, fmt.Errorf("File does not exists: %v. Error: %v", path, err)
+	if info, err := os.Stat(path); err != nil {
+		return false, err
+	} else {
+		return !info.IsDir(), nil
 	}
-	return !info.IsDir(), nil
 }
 
-func listFiles(prefix string) []FileStat {
+func listFiles(prefix string) ([]FileStat, error) {
 	files, err := os.ReadDir(prefix)
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 
 	var fileList []FileStat
 	for _, file := range files {
-		filePath := filepath.Join(prefix, file.Name())
-		fmt.Println(filePath)
-		if err := checkReadPerm(filePath); err != nil {
-			log.Printf("Skipping.. Reason: %v", err)
-			continue
-		}
-
-		fileInfo, err := os.Stat(filePath)
+		fileInfo, err := file.Info()
 		if err != nil {
-			log.Fatal(err)
+			return nil, err
 		}
 
 		fileList = append(fileList, FileStat{
 			Name:     fileInfo.Name(),
 			Size:     fileInfo.Size(),
-			FilePath: _fp(filePath),
+			FilePath: _fp(filepath.Join(prefix, fileInfo.Name())),
 			IsDir:    fileInfo.IsDir(),
 		})
 	}
-	return fileList
+	return fileList, nil
 }
 
 func serveFolder(w http.ResponseWriter, req *http.Request) {
-	fmt.Printf("media folder %v\n", MediaFolder)
+	log.Printf("media folder %v", MediaFolder)
 	filePath := req.PathValue("filepath")
-	fmt.Printf("filepath requested: %v\n", filePath)
+	log.Printf("filepath requested: %v", filePath)
 
 	path := filepath.Join(MediaFolder, filePath)
 	isFile, err := checkIsFile(path)
 	if err != nil {
-		log.Fatal(err)
-	}
-
-	if isFile {
-		fmt.Printf("Serving now: %v", path)
+		if errors.Is(err, os.ErrNotExist) {
+			http.NotFound(w, req)
+			return
+		}
+		log.Printf("checkIsFile(%q): %v", path, err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	fileList := listFiles(path)
+	if isFile {
+		log.Printf("Serving now: %v", path)
+		return
+	}
+
+	fileList, err := listFiles(path)
+	if err != nil {
+		log.Printf("listFiles(%q): %v", path, err)
+		http.Error(w, "Unable to read directory", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(fileList)
