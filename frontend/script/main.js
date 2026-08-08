@@ -38,13 +38,8 @@ async function createVideoElement({ name, src }) {
         const actualHeight = videoElement.videoHeight;
         console.log(`Original Resolution: ${actualWidth}x${actualHeight}`);
 
-        videoElement.width = actualWidth;
-
-        if (actualWidth > window.innerWidth) {
-            videoElement.style.width = "100%";
-        } else {
-            videoElement.style.width = `${actualWidth}px`;
-        }
+        videoElement.style.width = "auto";
+        videoElement.style.maxWidth = "100%";
     })
     // adjustLayout(videoElement)
 }
