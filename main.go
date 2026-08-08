@@ -2,20 +2,18 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 var MediaFolder string = os.Getenv("MEDIA_FOLDER")
 
 var SupportedVideoFormat = []string{".mp4"}
 
-type FileStat struct {
+type FileEntry struct {
 	Name     string `json:"name"`
 	FilePath string `json:"filepath"`
 	Size     int64  `json:"size"`
@@ -23,21 +21,10 @@ type FileStat struct {
 }
 
 func main() {
-	// http.HandleFunc("/videos", listFiles)
-	http.HandleFunc("/videos/{filepath...}", serveFolder)
+	http.Handle("/", http.FileServer(http.Dir("./frontend")))
+	http.HandleFunc("/api/videos/{filepath...}", listFiles)
+	http.HandleFunc("/api/videos/stream/{filepath...}", serveVideo)
 	http.ListenAndServe(":8090", nil)
-}
-
-func _fp(path string) string {
-	// sanitize file path
-	return strings.TrimPrefix(path, MediaFolder)
-}
-
-func checkReadPerm(path string) error {
-	if _, err := os.Open(path); err != nil {
-		return fmt.Errorf("User has no read permission for file: %v", _fp(path))
-	}
-	return nil
 }
 
 func checkIsFile(path string) (bool, error) {
@@ -48,58 +35,54 @@ func checkIsFile(path string) (bool, error) {
 	}
 }
 
-func listFiles(prefix string) ([]FileStat, error) {
-	files, err := os.ReadDir(prefix)
+func listFiles(w http.ResponseWriter, req *http.Request) {
+	filePath := req.PathValue("filepath")
+	log.Printf("Listing filepath: %v", filePath)
+	fullPath := filepath.Join(MediaFolder, filePath)
+	files, err := os.ReadDir(fullPath)
 	if err != nil {
-		return nil, err
+		http.Error(w, fmt.Sprintf("Unable to read directory: %q", filePath), http.StatusInternalServerError)
+		return
 	}
 
-	var fileList []FileStat
+	var fileList []FileEntry
 	for _, file := range files {
 		fileInfo, err := file.Info()
 		if err != nil {
-			return nil, err
+			http.Error(w, fmt.Sprintf("Unable to read file: %q", file.Name()), http.StatusInternalServerError)
+			return
 		}
 
-		fileList = append(fileList, FileStat{
+		fileList = append(fileList, FileEntry{
 			Name:     fileInfo.Name(),
 			Size:     fileInfo.Size(),
-			FilePath: _fp(filepath.Join(prefix, fileInfo.Name())),
+			FilePath: filepath.Join(filePath, fileInfo.Name()),
 			IsDir:    fileInfo.IsDir(),
 		})
 	}
-	return fileList, nil
-}
 
-func serveFolder(w http.ResponseWriter, req *http.Request) {
-	log.Printf("media folder %v", MediaFolder)
-	filePath := req.PathValue("filepath")
-	log.Printf("filepath requested: %v", filePath)
-
-	path := filepath.Join(MediaFolder, filePath)
-	isFile, err := checkIsFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			http.NotFound(w, req)
-			return
-		}
-		log.Printf("checkIsFile(%q): %v", path, err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	if isFile {
-		log.Printf("Serving now: %v", path)
-		return
-	}
-
-	fileList, err := listFiles(path)
-	if err != nil {
-		log.Printf("listFiles(%q): %v", path, err)
-		http.Error(w, "Unable to read directory", http.StatusInternalServerError)
-		return
-	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(fileList)
+}
+
+func serveVideo(w http.ResponseWriter, req *http.Request) {
+	filePath := req.PathValue("filepath")
+	log.Printf("Serving filepath: %v", filePath)
+
+	fullPath := filepath.Join(MediaFolder, filePath)
+	file, err := os.Open(fullPath)
+	if err != nil {
+		http.NotFound(w, req)
+		return
+	}
+	defer file.Close()
+
+	stat, err := file.Stat()
+	if err != nil {
+		http.Error(w, "Failed to retrieve file info", http.StatusInternalServerError)
+		return
+	}
+
+	http.ServeContent(w, req, stat.Name(), stat.ModTime(), file)
 }
